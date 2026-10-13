@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto Submitter · M&amp;E Coding kobo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+:root{--bg:#f3f5f1;--card:#fff;--ink:#17231c;--mut:#5c6b62;--line:#d5dcd3;--acc:#1f6f54;--accink:#fff;--warn:#a85a00;--ok:#1f6f54}
+@media(prefers-color-scheme:dark){:root{--bg:#121a15;--card:#1a251e;--ink:#e8efe9;--mut:#9fb0a5;--line:#2c3b32;--acc:#5fc79c;--accink:#0d1b14;--warn:#e8a050;--ok:#5fc79c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Segoe UI",system-ui,sans-serif}
+header{padding:2.2rem 1.2rem 1rem;max-width:920px;margin:auto}
+h1{font:700 2.1rem/1.1 Georgia,"Times New Roman",serif;margin:0 0 .4rem}
+header p{margin:0;color:var(--mut);max-width:62ch}
+main{max-width:920px;margin:auto;padding:0 1.2rem 3rem}
+section{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--acc);border-radius:6px;padding:1.2rem 1.3rem;margin:1rem 0}
+h2{font:600 1.15rem Georgia,serif;margin:0 0 .3rem}
+.hint{color:var(--mut);font-size:.9rem;margin:.2rem 0 .8rem}
+input[type=file]{display:block;width:100%;padding:.7rem;border:1.5px dashed var(--line);border-radius:6px;background:transparent;color:var(--ink)}
+input[type=text],input[type=password],input[type=number],select{padding:.55rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);width:100%}
+label.f{display:block;font-weight:600;font-size:.9rem;margin-bottom:.2rem}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:.8rem}
+@media(max-width:560px){.grid{grid-template-columns:1fr}}
+button{background:var(--acc);color:var(--accink);border:0;border-radius:6px;padding:.7rem 1.3rem;font:600 1rem inherit;cursor:pointer}
+button.sec{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+button:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;gap:.8rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}
+.stat{margin:.6rem 0 0;font-size:.92rem}.ok{color:var(--ok)}.warn{color:var(--warn)}
+progress{width:100%;height:14px;margin-top:.8rem;accent-color:var(--acc)}
+pre{background:var(--bg);padding:.8rem;border-radius:6px;overflow:auto;height:240px;font-size:.78rem;margin:.8rem 0 0}
+</style>
+</head>
+<body>
+<header>
+<h1>Auto Submitter</h1>
+<p>Part of M&amp;E Coding kobo. Select all your zip files once and this page sends every XML inside to Kobo, one at a time, with no manual uploads. Everything runs in your browser; your token is never saved.</p>
+</header>
+<main>
+
+<section>
+<h2>1. Select your files</h2>
+<p class="hint">Select all the zips at once (Ctrl+A in the file window), or loose .xml files.</p>
+<input type="file" id="files" multiple accept=".zip,.xml" aria-label="Zip or XML files">
+<p class="stat" id="loadStat"></p>
+</section>
+
+<section>
+<h2>2. Connect to the new account</h2>
+<div class="grid">
+<div><label class="f" for="server">Kobo server (the "kc" address)</label>
+<select id="server"><option value="https://kc.kobotoolbox.org">Global: kc.kobotoolbox.org</option><option value="https://kc-eu.kobotoolbox.org">Europe: kc-eu.kobotoolbox.org</option><option value="custom">Other…</option></select>
+<input type="text" id="custom" placeholder="https://kc.yourserver.org" hidden style="margin-top:.4rem"></div>
+<div><label class="f" for="token">API token of the NEW account</label>
+<input type="password" id="token" autocomplete="off" placeholder="Account Settings → Security"></div>
+<div><label class="f" for="limit">Send only this many files (0 = all)</label>
+<input type="number" id="limit" min="0" value="3"></div>
+<div><label class="f" for="delay">Pause between files (milliseconds)</label>
+<input type="number" id="delay" min="0" value="500"></div>
+</div>
+<p class="hint">The box is set to 3 so the first run is a test. Check those 3 appear in the new project, then set it to 0 and start again. Files already accepted are skipped.</p>
+</section>
+
+<section>
+<h2>3. Send</h2>
+<div class="row"><button id="go" disabled>Start sending</button><button id="stop" class="sec" disabled>Stop</button><button id="dl" class="sec" disabled>Download log (.csv)</button><button id="reset" class="sec">Forget progress</button></div>
+<progress id="bar" value="0" max="1"></progress>
+<p class="stat" id="runStat"></p>
+<pre id="log" aria-live="polite"></pre>
+</section>
+</main>
+
+<script>
+const $=s=>document.querySelector(s),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let ITEMS=[],running=false,rows=[],DONE=new Set();
+try{DONE=new Set(JSON.parse(localStorage.getItem('mecoding_done')||'[]'))}catch(_){}
+const save=()=>{try{localStorage.setItem('mecoding_done',JSON.stringify([...DONE]))}catch(_){}};
+const log=t=>{const l=$('#log');l.textContent+=t+'\n';l.scrollTop=l.scrollHeight};
+
+async function walk(zip,label,depth){
+  for(const e of Object.values(zip.files)){
+    if(e.dir||/__MACOSX|(^|\/)\._/.test(e.name))continue;
+    const src=label+'/'+e.name;
+    if(/\.zip$/i.test(e.name)&&depth<6){try{await walk(await JSZip.loadAsync(await e.async('uint8array')),src,depth+1);continue}catch(_){}}
+    if(/\.xml$/i.test(e.name))ITEMS.push({src,name:e.name.split('/').pop(),get:()=>e.async('uint8array')});
+  }
+}
+$('#files').onchange=async e=>{
+  ITEMS=[];const bad=[];$('#loadStat').textContent='Reading files…';
+  for(const f of [...e.target.files]){
+    try{if(/\.zip$/i.test(f.name))await walk(await JSZip.loadAsync(f),f.name,0);
+      else if(/\.xml$/i.test(f.name))ITEMS.push({src:f.name,name:f.name,get:()=>f.arrayBuffer().then(b=>new Uint8Array(b))})}
+    catch(_){bad.push(f.name)}}
+  ITEMS.sort((a,b)=>a.src<b.src?-1:1);
+  const d=ITEMS.filter(i=>DONE.has(i.src)).length;
+  $('#loadStat').innerHTML=`<span class="ok">${ITEMS.length} XML files found</span>${d?` · ${d} already sent earlier`:''}`+(bad.length?` <span class="warn">· could not open: ${bad.join(', ')}</span>`:'');
+  $('#bar').max=Math.max(ITEMS.length,1);$('#bar').value=d;
+  $('#go').disabled=!ITEMS.length;
+};
+$('#server').onchange=e=>$('#custom').hidden=e.target.value!=='custom';
+$('#stop').onclick=()=>{running=false;$('#stop').disabled=true};
+$('#reset').onclick=()=>{if(confirm('Forget which files were already sent? They could be sent again.')){DONE=new Set();save();$('#bar').value=0;log('Progress cleared.')}};
+$('#dl').onclick=()=>{
+  const csv='source,result,http_status,message\n'+rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='submit_log.csv';a.click()};
+
+function finish(msg,cls){running=false;$('#go').disabled=false;$('#stop').disabled=true;$('#dl').disabled=!rows.length;$('#runStat').innerHTML=`<span class="${cls}">${msg}</span>`}
+
+$('#go').onclick=async()=>{
+  let server=$('#server').value==='custom'?$('#custom').value.trim():$('#server').value;
+  const token=$('#token').value.trim();
+  if(!/^https?:\/\//.test(server)||!token){$('#runStat').innerHTML='<span class="warn">Enter the server address and API token first.</span>';return}
+  const url=server.replace(/\/+$/,'')+'/api/v1/submissions',limit=+$('#limit').value||0,delay=+$('#delay').value||0;
+  running=true;$('#go').disabled=true;$('#stop').disabled=false;$('#log').textContent='';
+  let sent=0,ok=0,dup=0,fail=0,netFails=0;
+  for(const it of ITEMS){
+    if(!running)break;
+    if(DONE.has(it.src))continue;
+    if(limit&&sent>=limit){break}
+    sent++;let res='failed',st=0,msg='';
+    for(let a=1;a<=4&&running;a++){
+      try{
+        const fd=new FormData();fd.append('xml_submission_file',new Blob([await it.get()],{type:'text/xml'}),it.name);
+        const r=await fetch(url,{method:'POST',headers:{Authorization:'Token '+token},body:fd});
+        st=r.status;msg=(await r.text()).replace(/\s+/g,' ').slice(0,300);
+        if(st===201){res='accepted';break}
+        if(st===202||/duplicate/i.test(msg)){res='duplicate';break}
+        if(st===401||st===403){finish('Kobo rejected the login. Check the token belongs to the new account and the server is right.','warn');return}
+        if(/STORAGE_BYTES|SUBMISSION/.test(msg)&&/limit|STORAGE/i.test(msg)){rows.push([it.src,'failed',st,msg]);finish('Kobo reports the account usage limit was reached. Stopped.','warn');return}
+        if(st<500&&st!==429)break;
+      }catch(e){st=0;msg=String(e)}
+      await sleep(2000*2**(a-1));
+    }
+    if(!running&&res==='failed'&&!st)break;
+    if(res!=='failed'){DONE.add(it.src);save()}
+    rows.push([it.src,res,st,msg]);
+    if(res==='accepted')ok++;else if(res==='duplicate')dup++;else{fail++;if(!st)netFails++}
+    $('#bar').value=ITEMS.filter(i=>DONE.has(i.src)).length;
+    log(`[${sent}] ${res}  ${it.src}`+(res==='failed'?`  (${st||'no response'}: ${msg.slice(0,90)})`:''));
+    $('#runStat').textContent=`Accepted ${ok} · duplicates ${dup} · failed ${fail}`;
+    if(netFails>=3&&ok===0){finish('No response from Kobo. The browser may be blocking this page from contacting Kobo (CORS), or the network blocks it. Tell Claude and ask for the PowerShell version.','warn');return}
+    await sleep(delay);
+  }
+  const left=ITEMS.filter(i=>!DONE.has(i.src)).length;
+  finish(`${running?'Finished':'Stopped'}. Accepted ${ok} · duplicates ${dup} · failed ${fail} · ${left} not yet sent.`,fail?'warn':'ok');
+};
+</script>
+</body>
+</html>
